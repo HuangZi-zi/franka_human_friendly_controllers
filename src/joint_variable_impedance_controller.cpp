@@ -42,16 +42,15 @@ bool JointVariableImpedanceController::init(hardware_interface::RobotHW* robot_h
     return false;
   }
 
-  franka_hw::FrankaModelInterface* model_interface =
-      robot_hw->get<franka_hw::FrankaModelInterface>();
+  auto* model_interface = robot_hw->get<franka_hw::FrankaModelInterface>();
   if (model_interface == nullptr) {
     ROS_ERROR_STREAM(
         "JointVariableImpedanceControllers: Error getting model interface from hardware");
     return false;
   }
   try {
-    model_handle_.reset(
-        new franka_hw::FrankaModelHandle(model_interface->getHandle(arm_id + "_model")));
+    model_handle_ = std::make_unique<franka_hw::FrankaModelHandle>(
+        model_interface->getHandle(arm_id + "_model"));
   } catch (hardware_interface::HardwareInterfaceException& ex) {
     ROS_ERROR_STREAM(
         "JointVariableImpedanceControllers: Exception getting model handle from interface: "
@@ -59,16 +58,15 @@ bool JointVariableImpedanceController::init(hardware_interface::RobotHW* robot_h
     return false;
   }
 
-  franka_hw::FrankaStateInterface* state_interface =
-      robot_hw->get<franka_hw::FrankaStateInterface>();
+  auto* state_interface = robot_hw->get<franka_hw::FrankaStateInterface>();
   if (state_interface == nullptr) {
     ROS_ERROR_STREAM(
         "JointVariableImpedanceControllers: Error getting state interface from hardware");
     return false;
   }
   try {
-    state_handle_.reset(
-        new franka_hw::FrankaStateHandle(state_interface->getHandle(arm_id + "_robot")));
+    state_handle_ = std::make_unique<franka_hw::FrankaStateHandle>(
+        state_interface->getHandle(arm_id + "_robot"));
   } catch (hardware_interface::HardwareInterfaceException& ex) {
     ROS_ERROR_STREAM(
         "JointVariableImpedanceControllers: Exception getting state handle from interface: "
@@ -76,8 +74,7 @@ bool JointVariableImpedanceController::init(hardware_interface::RobotHW* robot_h
     return false;
   }
 
-  hardware_interface::EffortJointInterface* effort_joint_interface =
-      robot_hw->get<hardware_interface::EffortJointInterface>();
+  auto* effort_joint_interface = robot_hw->get<hardware_interface::EffortJointInterface>();
   if (effort_joint_interface == nullptr) {
     ROS_ERROR_STREAM(
         "JointVariableImpedanceControllers: Error getting effort joint interface from hardware");
@@ -94,14 +91,21 @@ bool JointVariableImpedanceController::init(hardware_interface::RobotHW* robot_h
   }
 
   dynamic_reconfigure_compliance_joint_param_node_ =
-      ros::NodeHandle("dynamic_reconfigure_compliance_param_node");
+      ros::NodeHandle(node_handle.getNamespace() + "/dynamic_reconfigure_compliance_param_node");
 
-  dynamic_server_compliance_joint_param_.reset(
-      new dynamic_reconfigure::Server<franka_human_friendly_controllers::compliance_joint_paramConfig>(
-          dynamic_reconfigure_compliance_joint_param_node_));
+  dynamic_server_compliance_joint_param_ = std::make_unique<
+      dynamic_reconfigure::Server<franka_human_friendly_controllers::compliance_joint_paramConfig>>(
+      dynamic_reconfigure_compliance_joint_param_node_);
 
   dynamic_server_compliance_joint_param_->setCallback(
       boost::bind(&JointVariableImpedanceController::complianceJointParamCallback, this, _1, _2));
+
+  // Trigger initial compliance parameters from the cfg defaults.
+  {
+    franka_human_friendly_controllers::compliance_joint_paramConfig initial_joint_config;
+    initial_joint_config.__fromServer__(dynamic_reconfigure_compliance_joint_param_node_);
+    complianceJointParamCallback(initial_joint_config, 0xFFFFFFFF);
+  }
 
   return true;
 }

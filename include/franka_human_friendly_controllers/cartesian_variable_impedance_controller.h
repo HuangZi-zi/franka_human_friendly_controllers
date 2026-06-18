@@ -3,6 +3,7 @@
 #pragma once
 
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -54,32 +55,27 @@ class CartesianVariableImpedanceController : public controller_interface::MultiI
   std::unique_ptr<franka_hw::FrankaModelHandle> model_handle_;
   std::vector<hardware_interface::JointHandle> joint_handles_;
 
+  double filter_params_{0.02};
   double nullspace_stiffness_{0.0};
   double nullspace_stiffness_target_{0.0};
-  double dt{0.001};
-  double time_start;
-  int alpha;
-  int filter_step{0};
-  int filter_step_;
   const double delta_tau_max_{1.0};
-  double delta_lim_lin;
-  double delta_lim_ori;
+  double delta_lim_lin{0.05};
+  double delta_lim_ori{0.15};
+  double joint_default_damping_{0.0};
   Eigen::Matrix<double, 6, 6> cartesian_stiffness_;
   Eigen::Matrix<double, 6, 6> cartesian_damping_;
   Eigen::Matrix<double, 7, 1> q_d_nullspace_;
   Eigen::Matrix<double, 6, 6> cartesian_stiffness_target_;
   Eigen::Matrix<double, 6, 6> cartesian_damping_target_;
-  double joint_default_damping_;
-  double last_joint_default_damping_;
   Eigen::Matrix<double, 6, 1> force_torque;
   Eigen::Matrix<double, 6, 1> force_torque_old;
   Eigen::Matrix<float, 7, 1> stiff_;
   Eigen::Vector3d position_d_;
   Eigen::Quaterniond orientation_d_;
+  std::mutex position_and_orientation_d_target_mutex_;
 
   double count_vibration{10000.0};
   double duration_vibration;
-  bool vibrate= false;
 
   double joint_limits[7][2];
 

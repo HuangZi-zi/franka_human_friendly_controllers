@@ -32,9 +32,6 @@ double* CartesianVariableImpedanceController::get_fk(franka::RobotState robot_st
 
 bool CartesianVariableImpedanceController::init(hardware_interface::RobotHW* robot_hw,
                                                ros::NodeHandle& node_handle) {
-  std::vector<double> cartesian_stiffness_vector;
-  std::vector<double> cartesian_damping_vector;
-
   sub_equilibrium_pose_ = node_handle.subscribe(
       "/equilibrium_pose", 20, &CartesianVariableImpedanceController::equilibriumPoseCallback, this,
       ros::TransportHints().reliable().tcpNoDelay());
@@ -65,16 +62,15 @@ bool CartesianVariableImpedanceController::init(hardware_interface::RobotHW* rob
     return false;
   }
 
-  franka_hw::FrankaModelInterface* model_interface =
-      robot_hw->get<franka_hw::FrankaModelInterface>();
+  auto* model_interface = robot_hw->get<franka_hw::FrankaModelInterface>();
   if (model_interface == nullptr) {
     ROS_ERROR_STREAM(
         "CartesianVariableImpedanceController: Error getting model interface from hardware");
     return false;
   }
   try {
-    model_handle_.reset(
-        new franka_hw::FrankaModelHandle(model_interface->getHandle(arm_id + "_model")));
+    model_handle_ = std::make_unique<franka_hw::FrankaModelHandle>(
+        model_interface->getHandle(arm_id + "_model"));
   } catch (hardware_interface::HardwareInterfaceException& ex) {
     ROS_ERROR_STREAM(
         "CartesianVariableImpedanceController: Exception getting model handle from interface: "
@@ -82,16 +78,15 @@ bool CartesianVariableImpedanceController::init(hardware_interface::RobotHW* rob
     return false;
   }
 
-  franka_hw::FrankaStateInterface* state_interface =
-      robot_hw->get<franka_hw::FrankaStateInterface>();
+  auto* state_interface = robot_hw->get<franka_hw::FrankaStateInterface>();
   if (state_interface == nullptr) {
     ROS_ERROR_STREAM(
         "CartesianVariableImpedanceController: Error getting state interface from hardware");
     return false;
   }
   try {
-    state_handle_.reset(
-        new franka_hw::FrankaStateHandle(state_interface->getHandle(arm_id + "_robot")));
+    state_handle_ = std::make_unique<franka_hw::FrankaStateHandle>(
+        state_interface->getHandle(arm_id + "_robot"));
   } catch (hardware_interface::HardwareInterfaceException& ex) {
     ROS_ERROR_STREAM(
         "CartesianVariableImpedanceController: Exception getting state handle from interface: "
@@ -99,8 +94,7 @@ bool CartesianVariableImpedanceController::init(hardware_interface::RobotHW* rob
     return false;
   }
 
-  hardware_interface::EffortJointInterface* effort_joint_interface =
-      robot_hw->get<hardware_interface::EffortJointInterface>();
+  auto* effort_joint_interface = robot_hw->get<hardware_interface::EffortJointInterface>();
   if (effort_joint_interface == nullptr) {
     ROS_ERROR_STREAM(
         "CartesianVariableImpedanceController: Error getting effort joint interface from hardware");
@@ -117,40 +111,48 @@ bool CartesianVariableImpedanceController::init(hardware_interface::RobotHW* rob
   }
 
   dynamic_reconfigure_compliance_param_node_ =
-      ros::NodeHandle("dynamic_reconfigure_compliance_param_node");
+      ros::NodeHandle(node_handle.getNamespace() + "/dynamic_reconfigure_compliance_param_node");
 
-  dynamic_server_compliance_param_.reset(
-      new dynamic_reconfigure::Server<franka_human_friendly_controllers::compliance_paramConfig>(
-          dynamic_reconfigure_compliance_param_node_));
+  dynamic_server_compliance_param_ = std::make_unique<
+      dynamic_reconfigure::Server<franka_human_friendly_controllers::compliance_paramConfig>>(
+      dynamic_reconfigure_compliance_param_node_);
   dynamic_server_compliance_param_->setCallback(
       boost::bind(&CartesianVariableImpedanceController::complianceParamCallback, this, _1, _2));
 
+  // Trigger initial compliance parameters from the cfg defaults so the controller
+  // has impedance from the very first control cycle, before rqt_reconfigure is touched.
+  {
+    franka_human_friendly_controllers::compliance_paramConfig initial_config;
+    initial_config.__fromServer__(dynamic_reconfigure_compliance_param_node_);
+    complianceParamCallback(initial_config, 0xFFFFFFFF);
+  }
+
   position_d_.setZero();
   orientation_d_.coeffs() << 0.0, 0.0, 0.0, 1.0;
-  cartesian_stiffness_.setZero();
-  cartesian_damping_.setZero();
 
   stiff_.setZero();
 
-      // Define variables to store parameter values
-    const std::string limit_types[2] = {"lower", "upper"};
-
-  // Read parameters from the parameter server
+  // Read joint limits for repulsion. Falls back to defaults if parameters are missing
+  // (e.g. when joint_limits.yaml wasn't loaded).
+  const std::string limit_types[2] = {"lower", "upper"};
   for (int i = 0; i < 7; ++i) {
-      for (const std::string& limit_type : limit_types) {
-          std::string param_name = "/joint" + std::to_string(i + 1) + "/limit/" + limit_type;
-          if (!node_handle.getParam(param_name, joint_limits[i][limit_type == "lower" ? 0 : 1])) {
-              ROS_ERROR("Failed to retrieve parameter: %s", param_name.c_str());
-              return 1;
-          }
+    for (const std::string& limit_type : limit_types) {
+      std::string param_name = "/joint" + std::to_string(i + 1) + "/limit/" + limit_type;
+      int idx = limit_type == "lower" ? 0 : 1;
+      if (!node_handle.getParam(param_name, joint_limits[i][idx])) {
+        ROS_WARN("CartesianVariableImpedanceController: Failed to retrieve parameter %s, "
+                 "using safe default.", param_name.c_str());
+        // Safe defaults: wide limits that effectively disable repulsion for this joint
+        joint_limits[i][idx] = (idx == 0) ? -100.0 : 100.0;
       }
+    }
   }
 
-    // Stream the parameter values
-    ROS_INFO("Joint limits:");
-    for (int i = 0; i < 7; ++i) {
-        ROS_INFO("Joint %d: lower=%.4f, upper=%.4f", i + 1, joint_limits[i][0], joint_limits[i][1]);
-    }
+  // Stream the parameter values
+  ROS_INFO("Joint limits:");
+  for (int i = 0; i < 7; ++i) {
+    ROS_INFO("Joint %d: lower=%.4f, upper=%.4f", i + 1, joint_limits[i][0], joint_limits[i][1]);
+  }
 
   this->loadModel();
 
@@ -165,27 +167,17 @@ void CartesianVariableImpedanceController::starting(const ros::Time& /*time*/) {
   std::array<double, 42> jacobian_array = this->get_jacobian(initial_state);
   // convert to eigen
   std::array<double, 42> jacobian_array_adaptive = this->get_jacobian(initial_state);
-  Eigen::Map<Eigen::Matrix<double, 6, 7> > jacobian(jacobian_array.data());
-  Eigen::Map<Eigen::Matrix<double, 6, 7> > jacobian_adaptive(jacobian_array_adaptive.data());
-  Eigen::Map<Eigen::Matrix<double, 7, 1> > dq_initial(initial_state.dq.data());
-  Eigen::Map<Eigen::Matrix<double, 7, 1> > q_initial(initial_state.q.data());
+  Eigen::Map<Eigen::Matrix<double, 7, 1>> q_initial(initial_state.q.data());
   double* T_EE = this->get_fk(initial_state);
 
   Eigen::Affine3d initial_transform(Eigen::Matrix4d::Map(T_EE));
-  
-  
 
-  /*
-  double* T_0_hand = fk(q_initial.data());
-  Eigen::Affine3d initial_transform(Eigen::Matrix4d::Map(T_0_hand));
-  */
   // set equilibrium point to current state
-  position_d_ = initial_transform.translation(); // this allows the robot to start on the starting configuration
-  orientation_d_ = Eigen::Quaterniond(initial_transform.linear()); // this allows the robot to start on the
+  position_d_ = initial_transform.translation();
+  orientation_d_ = Eigen::Quaterniond(initial_transform.linear());
   // set nullspace equilibrium configuration to initial q
   q_d_nullspace_ = q_initial;
   force_torque_old.setZero();
-  double time_old=ros::Time::now().toSec();
   count_vibration=1000;
 }
 
@@ -338,9 +330,12 @@ count_vibration=count_vibration+1;}
 
   // cartesian_stiffness_ =cartesian_stiffness_target_;
   // cartesian_damping_ = cartesian_damping_target_;
-  cartesian_stiffness_ =cartesian_stiffness_+ 0.02*(cartesian_stiffness_target_-cartesian_stiffness_);
-  cartesian_damping_ =cartesian_damping_+ 0.02*(cartesian_damping_target_-cartesian_damping_);
-  nullspace_stiffness_ = nullspace_stiffness_+ 0.02*(nullspace_stiffness_target_-nullspace_stiffness_);
+  cartesian_stiffness_ =
+      filter_params_ * cartesian_stiffness_target_ + (1.0 - filter_params_) * cartesian_stiffness_;
+  cartesian_damping_ =
+      filter_params_ * cartesian_damping_target_ + (1.0 - filter_params_) * cartesian_damping_;
+  nullspace_stiffness_ =
+      filter_params_ * nullspace_stiffness_target_ + (1.0 - filter_params_) * nullspace_stiffness_;
   Eigen::AngleAxisd aa_orientation_d(orientation_d_);
   orientation_d_ = Eigen::Quaterniond(aa_orientation_d);
 }
@@ -397,13 +392,15 @@ void CartesianVariableImpedanceController::complianceParamCallback(
 
 void CartesianVariableImpedanceController::equilibriumPoseCallback(
     const geometry_msgs::PoseStampedConstPtr& msg) {
+  std::lock_guard<std::mutex> position_d_target_mutex_lock(
+      position_and_orientation_d_target_mutex_);
   position_d_ << msg->pose.position.x, msg->pose.position.y, msg->pose.position.z;
   Eigen::Quaterniond last_orientation_d_(orientation_d_);
   orientation_d_.coeffs() << msg->pose.orientation.x, msg->pose.orientation.y,
       msg->pose.orientation.z, msg->pose.orientation.w;
   if (last_orientation_d_.coeffs().dot(orientation_d_.coeffs()) < 0.0) {
     orientation_d_.coeffs() << -orientation_d_.coeffs();
-}
+  }
 }
 
 void CartesianVariableImpedanceController::equilibriumConfigurationCallback( const std_msgs::Float32MultiArray::ConstPtr& joint) {

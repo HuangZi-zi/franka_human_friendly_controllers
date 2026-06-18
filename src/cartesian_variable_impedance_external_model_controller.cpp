@@ -20,7 +20,7 @@ void CartesianVariableImpedanceExternalModelController::loadModel() {
   std::cout << "Loading urdf into pinocchio as we are using the urdf model" << std::endl;
   pinocchio::urdf::buildModel(urdf_path_, model_pin_);
   frame_id_ = model_pin_.getFrameId(frame_name_);
-  data_pin_ = new pinocchio::Data(model_pin_);
+  data_pin_ = std::make_unique<pinocchio::Data>(model_pin_);
   std::cout << "Succesfully loaded the model and created the data pointer." << std::endl;
 }
 
@@ -29,28 +29,25 @@ double* CartesianVariableImpedanceExternalModelController::get_fk(franka::RobotS
   Eigen::Map<Eigen::Matrix<double, 9, 1>> q(robot_state.q.data());
   Eigen::VectorXd q_vector = Eigen::VectorXd::Map(q.data(), q.size());
 
-
   pinocchio::forwardKinematics(model_pin_, *data_pin_, q_vector);
   pinocchio::updateFramePlacement(model_pin_, *data_pin_, frame_id_);
-  const auto& transformation = data_pin_->oMf[frame_id_];  // Get the transformation of the frame
-  
-  // Allocate memory for the result
-  double* result = new double[16];
-  std::memcpy(result, transformation.toHomogeneousMatrix().data(), 16 * sizeof(double));
-  return result; // Caller is responsible for deleting the allocated memory
+  const auto& transformation = data_pin_->oMf[frame_id_];
+
+  // Write into a thread-local buffer to avoid heap allocation every control tick.
+  thread_local std::array<double, 16> fk_buffer;
+  Eigen::Map<Eigen::Matrix4d>(fk_buffer.data()) = transformation.toHomogeneousMatrix();
+  return fk_buffer.data();
 }
 
 std::array<double, 42> CartesianVariableImpedanceExternalModelController::get_jacobian(franka::RobotState robot_state)
 {
   Eigen::Map<Eigen::Matrix<double, 9, 1>> q(robot_state.q.data());
   Eigen::VectorXd q_vector = Eigen::VectorXd::Map(q.data(), q.size());
-  Eigen::MatrixXd jacobian(6, model_pin_.nv);  // 6xnv matrix for spatial Jacobian
-  jacobian.fill(0);  // Initialize to zero
-
+  Eigen::MatrixXd jacobian(6, model_pin_.nv);
+  jacobian.fill(0);
 
   pinocchio::forwardKinematics(model_pin_, *data_pin_, q_vector);
   pinocchio::computeJointJacobians(model_pin_, *data_pin_, q_vector);
-  //pinocchio::updateFramePlacements(model_pin_, *data_pin_);
   pinocchio::getFrameJacobian(model_pin_, *data_pin_, frame_id_, pinocchio::LOCAL_WORLD_ALIGNED, jacobian);
   std::array<double, 42> result;
   std::memcpy(result.data(), jacobian.data(), 42 * sizeof(double));

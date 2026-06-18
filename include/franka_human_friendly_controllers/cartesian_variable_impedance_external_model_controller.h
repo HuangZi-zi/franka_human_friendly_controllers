@@ -2,6 +2,8 @@
 // Use of this source code is governed by the Apache-2.0 license, see LICENSE
 #pragma once
 
+#include <memory>
+
 #include <franka_human_friendly_controllers/cartesian_variable_impedance_controller.h>
 
 namespace franka_human_friendly_controllers {
@@ -10,7 +12,7 @@ class CartesianVariableImpedanceExternalModelController : public CartesianVariab
   private:
     std::string urdf_path_;
     pinocchio::Model model_pin_;
-    pinocchio::Data* data_pin_;
+    std::unique_ptr<pinocchio::Data> data_pin_;
     std::string frame_name_;
     int frame_id_;
 

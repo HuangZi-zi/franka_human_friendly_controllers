@@ -85,4 +85,4 @@ class JointVariableImpedanceController : public controller_interface::MultiInter
 };
 
 
-}  // namespace franka_advanced_controllers
+}  // namespace franka_human_friendly_controllers
