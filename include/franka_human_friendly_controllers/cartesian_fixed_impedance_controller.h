@@ -30,15 +30,25 @@ class CartesianFixedImpedanceController : public controller_interface::MultiInte
   std::unique_ptr<franka_hw::FrankaCartesianPoseHandle> cartesian_pose_handle_;
   std::unique_ptr<franka_hw::FrankaStateHandle> state_handle_;
 
-  // Currently commanded pose (filtered toward target)
-  std::array<double, 16> pose_d_;
+  // Current commanded pose
+  Eigen::Vector3d pos_d_;
+  Eigen::Quaterniond ori_d_;
 
-  // Target pose from /equilibrium_pose subscriber
-  Eigen::Vector3d position_d_target_;
-  Eigen::Quaterniond orientation_d_target_;
+  // Current commanded velocity (used to enforce acc limits → no velocity jumps)
+  Eigen::Vector3d vel_d_;
+  Eigen::Vector3d ang_vel_d_;
+
+  // Target from /equilibrium_pose
+  Eigen::Vector3d pos_d_target_;
+  Eigen::Quaterniond ori_d_target_;
   std::mutex target_mutex_;
 
-  const double filter_params_{0.005};
+  // Motion limits (conservative, well within Franka hardware limits)
+  const double max_vel_{0.1};             // m/s
+  const double max_acc_{1.0};             // m/s²
+  const double max_rotational_vel_{0.2};  // rad/s
+  const double max_rotational_acc_{2.0};  // rad/s²
+  const double dt_{0.001};               // 1 kHz control rate
 
   ros::Subscriber sub_equilibrium_pose_;
   ros::Publisher pub_cartesian_pose_;
