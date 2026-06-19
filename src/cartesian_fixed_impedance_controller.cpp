@@ -55,6 +55,12 @@ bool CartesianFixedImpedanceController::init(hardware_interface::RobotHW* robot_
     return false;
   }
 
+  // Read optional smoothing frequency (Hz) and precompute filter coefficient
+  node_handle.getParam("smoothing_frequency", smoothing_frequency_);
+  alpha_ = 1.0 - std::exp(-2.0 * M_PI * smoothing_frequency_ * dt_);
+  ROS_INFO_STREAM("CartesianFixedImpedanceController: smoothing_frequency="
+                  << smoothing_frequency_ << " Hz, alpha=" << alpha_);
+
   return true;
 }
 
@@ -70,6 +76,8 @@ void CartesianFixedImpedanceController::starting(const ros::Time& /*time*/) {
   std::lock_guard<std::mutex> lock(target_mutex_);
   pos_d_target_ = pos_d_;
   ori_d_target_ = ori_d_;
+  pos_d_target_filtered_ = pos_d_;
+  ori_d_target_filtered_ = ori_d_;
 }
 
 void CartesianFixedImpedanceController::update(const ros::Time& /*time*/,
@@ -92,13 +100,22 @@ void CartesianFixedImpedanceController::update(const ros::Time& /*time*/,
   pub_cartesian_pose_.publish(pose_msg);
 
   // --- Fetch target under lock ---
-  Eigen::Vector3d pos_target;
-  Eigen::Quaterniond ori_target;
+  Eigen::Vector3d pos_target_raw;
+  Eigen::Quaterniond ori_target_raw;
   {
     std::lock_guard<std::mutex> lock(target_mutex_);
-    pos_target = pos_d_target_;
-    ori_target = ori_d_target_;
+    pos_target_raw = pos_d_target_;
+    ori_target_raw = ori_d_target_;
   }
+
+  // --- 1st-order low-pass filter on target pose (eliminates velocity jumps) ---
+  pos_d_target_filtered_ += alpha_ * (pos_target_raw - pos_d_target_filtered_);
+  // Quaternion spherical linear interpolation toward raw target
+  ori_d_target_filtered_ =
+      ori_d_target_filtered_.slerp(alpha_, ori_target_raw).normalized();
+
+  const Eigen::Vector3d& pos_target = pos_d_target_filtered_;
+  const Eigen::Quaterniond& ori_target = ori_d_target_filtered_;
 
   // --- Translational velocity-limited motion ---
   // Desired velocity: point toward target, capped by max_vel_ and braking distance

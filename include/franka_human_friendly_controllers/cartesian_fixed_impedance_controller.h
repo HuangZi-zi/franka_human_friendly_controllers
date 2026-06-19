@@ -38,10 +38,19 @@ class CartesianFixedImpedanceController : public controller_interface::MultiInte
   Eigen::Vector3d vel_d_;
   Eigen::Vector3d ang_vel_d_;
 
-  // Target from /equilibrium_pose
+  // Target from /equilibrium_pose (raw, written by callback)
   Eigen::Vector3d pos_d_target_;
   Eigen::Quaterniond ori_d_target_;
   std::mutex target_mutex_;
+
+  // Filtered targets — attract toward raw targets with a 1st-order low-pass,
+  // eliminating velocity discontinuities when the commanded pose jumps.
+  Eigen::Vector3d pos_d_target_filtered_;
+  Eigen::Quaterniond ori_d_target_filtered_;
+
+  // Smoothing low-pass filter coefficient: alpha = 1 - exp(-2*pi*f_smooth*dt)
+  double alpha_{0.0};
+  double smoothing_frequency_{5.0};  // Hz cutoff (tunable via ROS param)
 
   // Motion limits (conservative, well within Franka hardware limits)
   const double max_vel_{0.1};             // m/s
